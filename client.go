@@ -5,9 +5,6 @@ package singpass
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,19 +18,12 @@ import (
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwe"
 	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 	"github.com/redis/go-redis/v9"
-)
 
-// Constants for Redis key prefixes and cache intervals
-const (
-	StateKeyPrefix = "singpass:state:"
-	NonceKeyPrefix = "singpass:nonce:"
-
-	// Expiration durations
-	stateExpiration = 10 * time.Minute
-	nonceExpiration = 10 * time.Minute
+	"github.com/vector233/go-singpass/internal/auth"
+	"github.com/vector233/go-singpass/internal/errors"
+	"github.com/vector233/go-singpass/internal/utils"
 )
 
 // ClientInterface defines the contract for Singpass authentication operations
@@ -60,19 +50,15 @@ type ClientInterface interface {
 	Close() error
 }
 
-// StateData represents OAuth state information
-type StateData struct {
-	CodeVerifier string `json:"code_verifier"`
-	Nonce        string `json:"nonce"`
-}
-
 // Client represents the Singpass authentication client
 // It implements the ClientInterface
 type Client struct {
-	config      Config
-	redisClient *redis.Client
-	httpClient  *http.Client
-	jwksCache   *jwk.Cache
+	config         Config
+	stateManager   *auth.StateManager
+	tokenValidator *auth.TokenValidator
+	httpClient     *http.Client
+	jwksCache      *jwk.Cache
+	redisClient    *redis.Client
 }
 
 // Ensure Client implements ClientInterface at compile time
@@ -96,7 +82,7 @@ func NewClient(config *Config) (*Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := redisClient.Ping(ctx).Err(); err != nil {
-		return nil, ErrRedisOperation{Operation: "ping", Message: err.Error()}
+		return nil, errors.ErrRedisOperation{Operation: "ping", Message: err.Error()}
 	}
 
 	// Initialize HTTP client
@@ -120,11 +106,19 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to register JWKS URL in cache: %w", err)
 	}
 
+	// Initialize state manager
+	stateManager := auth.NewStateManager(redisClient, config.StateExpiration)
+
+	// Initialize token validator
+	tokenValidator := auth.NewTokenValidator(jwksCache, config.JWKSURL, config.Issuer, config.ClientID)
+
 	client := &Client{
-		config:      *config,
-		redisClient: redisClient,
-		httpClient:  httpClient,
-		jwksCache:   jwksCache,
+		config:         *config,
+		stateManager:   stateManager,
+		tokenValidator: tokenValidator,
+		httpClient:     httpClient,
+		jwksCache:      jwksCache,
+		redisClient:    redisClient,
 	}
 
 	return client, nil
@@ -133,27 +127,27 @@ func NewClient(config *Config) (*Client, error) {
 // GenerateAuthURL generates the authorization URL for Singpass login
 func (c *Client) GenerateAuthURL(ctx context.Context) (string, error) {
 	// Generate state and nonce
-	state := generateState()
-	nonce, err := generateNonce()
+	state := utils.GenerateState()
+	nonce, err := utils.GenerateNonce()
 	if err != nil {
 		return "", fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
 	// Generate PKCE code verifier and challenge
-	codeVerifier, err := generateRandomBase64(32)
+	codeVerifier, err := utils.GenerateRandomBase64(32)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate code verifier: %w", err)
 	}
 
-	codeChallenge := c.generateCodeChallenge(codeVerifier)
+	codeChallenge := utils.GenerateCodeChallenge(codeVerifier)
 
-	// Store state data in Redis
-	stateData := &StateData{
+	// Store state data
+	stateData := &auth.StateData{
 		CodeVerifier: codeVerifier,
 		Nonce:        nonce,
 	}
 
-	if err := c.storeStateData(ctx, state, stateData); err != nil {
+	if err := c.stateManager.Store(ctx, state, stateData); err != nil {
 		return "", fmt.Errorf("failed to store state data: %w", err)
 	}
 
@@ -174,13 +168,11 @@ func (c *Client) GenerateAuthURL(ctx context.Context) (string, error) {
 }
 
 // ExchangeCodeForTokens processes the callback and returns only the validated tokens
-// Takes the authorization code and state from the callback URL
-// Returns the token response after validation, without fetching user info
 func (c *Client) ExchangeCodeForTokens(ctx context.Context, code, state string) (*TokenResponse, error) {
 	// Retrieve and validate state data
-	stateData, err := c.getStateData(ctx, state)
+	stateData, err := c.stateManager.Get(ctx, state)
 	if err != nil {
-		return nil, ErrInvalidState{Message: "state not found or expired"}
+		return nil, errors.ErrInvalidState{Message: "state not found or expired"}
 	}
 
 	// Exchange code for tokens
@@ -190,20 +182,18 @@ func (c *Client) ExchangeCodeForTokens(ctx context.Context, code, state string) 
 	}
 
 	// Validate ID token
-	_, err = c.validateIDToken(ctx, tokenResp.IDToken, stateData.Nonce)
+	_, err = c.tokenValidator.ValidateIDToken(ctx, tokenResp.IDToken, stateData.Nonce)
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate ID token: %w", err)
 	}
 
 	// Clean up state data
-	c.deleteStateData(ctx, state)
+	c.stateManager.Delete(ctx, state)
 
 	return tokenResp, nil
 }
 
 // ExchangeCodeForUserInfo processes the callback from Singpass after user authentication
-// Takes the authorization code and state from the callback URL
-// Returns the complete user information after token validation
 func (c *Client) ExchangeCodeForUserInfo(ctx context.Context, code, state string) (*UserInfo, error) {
 	// Get validated tokens first
 	tokenResp, err := c.ExchangeCodeForTokens(ctx, code, state)
@@ -218,83 +208,6 @@ func (c *Client) ExchangeCodeForUserInfo(ctx context.Context, code, state string
 	}
 
 	return userInfo, nil
-}
-
-// generateRandomString generates a cryptographically secure random string
-func (c *Client) generateRandomString(length int) (string, error) {
-	bytes := make([]byte, length)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
-	}
-	return base64.URLEncoding.EncodeToString(bytes)[:length], nil
-}
-
-// generateRandomBase64 generates a base64 encoded random string
-func generateRandomBase64(byteLength int) (string, error) {
-	bytes := make([]byte, byteLength)
-	_, err := rand.Read(bytes)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(bytes), nil
-}
-
-// generateState generates a unique state parameter
-func generateState() string {
-	return uuid.New().String()
-}
-
-// generateNonce generates a random nonce
-func generateNonce() (string, error) {
-	return generateRandomBase64(16)
-}
-
-// generateCodeChallenge generates PKCE code challenge from verifier
-func (c *Client) generateCodeChallenge(verifier string) string {
-	hash := sha256.Sum256([]byte(verifier))
-	encoded := base64.URLEncoding.EncodeToString(hash[:])
-	return strings.TrimRight(encoded, "=")
-}
-
-// storeStateData stores state data in Redis
-func (c *Client) storeStateData(ctx context.Context, state string, stateData *StateData) error {
-	data, err := json.Marshal(stateData)
-	if err != nil {
-		return err
-	}
-
-	key := fmt.Sprintf("%s%s", StateKeyPrefix, state)
-	err = c.redisClient.Set(ctx, key, data, stateExpiration).Err()
-	if err != nil {
-		return ErrRedisOperation{Operation: "set", Message: err.Error()}
-	}
-
-	return nil
-}
-
-// getStateData retrieves state data from Redis
-func (c *Client) getStateData(ctx context.Context, state string) (*StateData, error) {
-	key := fmt.Sprintf("%s%s", StateKeyPrefix, state)
-	data, err := c.redisClient.Get(ctx, key).Result()
-	if err != nil {
-		if err == redis.Nil {
-			return nil, ErrInvalidState{Message: "state not found"}
-		}
-		return nil, ErrRedisOperation{Operation: "get", Message: err.Error()}
-	}
-
-	var stateData StateData
-	if err := json.Unmarshal([]byte(data), &stateData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal state data: %w", err)
-	}
-
-	return &stateData, nil
-}
-
-// deleteStateData removes state data from Redis
-func (c *Client) deleteStateData(ctx context.Context, state string) {
-	key := fmt.Sprintf("%s%s", StateKeyPrefix, state)
-	c.redisClient.Del(ctx, key)
 }
 
 // exchangeCodeForTokens exchanges authorization code for tokens
@@ -339,7 +252,7 @@ func (c *Client) exchangeCodeForTokens(ctx context.Context, code, codeVerifier s
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, ErrHTTPRequest{StatusCode: resp.StatusCode, Message: string(body)}
+		return nil, errors.ErrHTTPRequest{StatusCode: resp.StatusCode, Message: string(body)}
 	}
 
 	var tokenResp TokenResponse
@@ -348,191 +261,6 @@ func (c *Client) exchangeCodeForTokens(ctx context.Context, code, codeVerifier s
 	}
 
 	return &tokenResp, nil
-}
-
-// validateIDToken validates the ID token and extracts user information
-func (c *Client) validateIDToken(ctx context.Context, idToken, expectedNonce string) (*UserInfo, error) {
-	// Parse and validate token
-	claims, err := c.parseAndValidateToken(ctx, idToken)
-	if err != nil {
-		return nil, err
-	}
-
-	// Validate token claims
-	if err := c.validateTokenClaims(claims, expectedNonce); err != nil {
-		return nil, err
-	}
-
-	// Extract user information
-	return c.extractUserInfoFromClaims(claims), nil
-}
-
-// parseAndValidateToken parses and validates the JWT token
-func (c *Client) parseAndValidateToken(ctx context.Context, idToken string) (map[string]interface{}, error) {
-	// Get JWKS
-	jwks, err := c.getJWKS(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get JWKS: %w", err)
-	}
-
-	// Verify the JWS token with algorithm inference
-	buf, err := jws.Verify([]byte(idToken), jws.WithKeySet(jwks, jws.WithInferAlgorithmFromKey(true)))
-	if err != nil {
-		return nil, ErrTokenValidation{Message: err.Error()}
-	}
-
-	// Parse claims from verified payload
-	var claims map[string]interface{}
-	if err := json.Unmarshal(buf, &claims); err != nil {
-		return nil, fmt.Errorf("failed to parse ID token claims: %w", err)
-	}
-
-	return claims, nil
-}
-
-// validateTokenClaims validates the token claims
-func (c *Client) validateTokenClaims(claims map[string]interface{}, expectedNonce string) error {
-	// Validate issuer
-	issuer, ok := claims["iss"].(string)
-	if !ok || issuer != c.config.Issuer {
-		return ErrTokenValidation{Message: "invalid issuer"}
-	}
-
-	// Validate audience
-	audience, ok := claims["aud"].(string)
-	if !ok || audience != c.config.ClientID {
-		return ErrTokenValidation{Message: "invalid audience"}
-	}
-
-	// Validate expiration
-	exp, ok := claims["exp"].(float64)
-	if !ok || float64(time.Now().Unix()) >= exp {
-		return ErrTokenValidation{Message: "token has expired"}
-	}
-
-	// Validate issued at
-	iat, ok := claims["iat"].(float64)
-	if !ok || float64(time.Now().Unix()) < iat {
-		return ErrTokenValidation{Message: "token issued in the future"}
-	}
-
-	// Validate nonce
-	tokenNonce, ok := claims["nonce"].(string)
-	if !ok || tokenNonce != expectedNonce {
-		return ErrTokenValidation{Message: "invalid nonce"}
-	}
-
-	return nil
-}
-
-// extractUserInfoFromClaims extracts user information from the claims
-func (c *Client) extractUserInfoFromClaims(claims map[string]interface{}) *UserInfo {
-	userInfo := &UserInfo{}
-
-	if issuer, ok := claims["iss"].(string); ok {
-		userInfo.Iss = issuer
-	}
-
-	if subject, ok := claims["sub"].(string); ok {
-		userInfo.Sub = subject
-	}
-
-	if iat, ok := claims["iat"].(float64); ok {
-		userInfo.Iat = int64(iat)
-	}
-
-	if exp, ok := claims["exp"].(float64); ok {
-		userInfo.Exp = int64(exp)
-	}
-
-	if audience, ok := claims["aud"].(string); ok {
-		userInfo.Aud = audience
-	}
-
-	// Extract custom claims
-	c.extractCustomClaimsFromMap(claims, userInfo)
-	// Extract address information
-	c.extractAddressInfoFromMap(claims, userInfo)
-
-	return userInfo
-}
-
-// extractCustomClaimsFromMap extracts custom claims from the claims map
-func (c *Client) extractCustomClaimsFromMap(claims map[string]interface{}, userInfo *UserInfo) {
-	// Extract custom claims
-	if name, ok := claims["name"].(string); ok {
-		userInfo.Name = ValueField{Value: name}
-	}
-
-	if uinfin, ok := claims["uinfin"].(string); ok {
-		userInfo.UINFIN = ValueField{Value: uinfin}
-	}
-
-	if sex, ok := claims["sex"].(string); ok {
-		userInfo.Sex = CodedField{Code: sex}
-	}
-
-	if dob, ok := claims["dob"].(string); ok {
-		userInfo.DOB = ValueField{Value: dob}
-	}
-
-	if nationality, ok := claims["nationality"].(string); ok {
-		userInfo.Nationality = CodedField{Code: nationality}
-	}
-
-	if mobile, ok := claims["mobileno"].(string); ok {
-		userInfo.MobileNo = PhoneField{Number: ValueWrapper{Value: mobile}}
-	}
-
-	if email, ok := claims["email"].(string); ok {
-		userInfo.Email = ValueField{Value: email}
-	}
-}
-
-// extractAddressInfoFromMap extracts address information from the claims map
-func (c *Client) extractAddressInfoFromMap(claims map[string]interface{}, userInfo *UserInfo) {
-	if regAddr, ok := claims["regadd"].(map[string]interface{}); ok {
-		address := RegisteredAddress{}
-		if addrType, ok := regAddr["type"].(string); ok {
-			address.Type = addrType
-		}
-		if country, ok := regAddr["country"].(map[string]interface{}); ok {
-			if code, ok := country["code"].(string); ok {
-				address.Country.Code = code
-			}
-			if desc, ok := country["desc"].(string); ok {
-				address.Country.Desc = desc
-			}
-		}
-		if unit, ok := regAddr["unit"].(string); ok {
-			address.Unit = ValueWrapper{Value: unit}
-		}
-		if floor, ok := regAddr["floor"].(string); ok {
-			address.Floor = ValueWrapper{Value: floor}
-		}
-		if block, ok := regAddr["block"].(string); ok {
-			address.Block = ValueWrapper{Value: block}
-		}
-		if building, ok := regAddr["building"].(string); ok {
-			address.Building = ValueWrapper{Value: building}
-		}
-		if street, ok := regAddr["street"].(string); ok {
-			address.Street = ValueWrapper{Value: street}
-		}
-		if postal, ok := regAddr["postal"].(string); ok {
-			address.Postal = ValueWrapper{Value: postal}
-		}
-		userInfo.RegAdd = address
-	}
-}
-
-// getJWKS retrieves the JWKS from cache or fetches it
-func (c *Client) getJWKS(ctx context.Context) (jwk.Set, error) {
-	jwks, err := c.jwksCache.Lookup(ctx, c.config.JWKSURL)
-	if err != nil {
-		return nil, ErrJWKSFetch{Message: err.Error()}
-	}
-	return jwks, nil
 }
 
 // createClientAssertion creates a JWT client assertion for token exchange
@@ -592,21 +320,6 @@ func (c *Client) loadPrivateKey() (jwk.Key, error) {
 	jwkKey, err := c.loadJWKFromFile(c.config.SigPrivateKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load private key: %w", err)
-	}
-
-	return jwkKey, nil
-}
-
-// loadEncryptionPrivateKey loads the encryption private key from file
-func (c *Client) loadEncryptionPrivateKey() (jwk.Key, error) {
-	if c.config.EncPrivateKeyPath == "" {
-		return nil, fmt.Errorf("encryption private key path not configured")
-	}
-
-	// Load JWK from file
-	jwkKey, err := c.loadJWKFromFile(c.config.EncPrivateKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load encryption private key: %w", err)
 	}
 
 	return jwkKey, nil
@@ -683,15 +396,23 @@ func (c *Client) GetUserInfo(ctx context.Context, accessToken string) (*UserInfo
 
 // decryptUserInfo decrypts JWE encrypted user info response
 func (c *Client) decryptUserInfo(encryptedData []byte) ([]byte, error) {
+	// Try to parse as JSON first (unencrypted response)
+	var testJSON map[string]interface{}
+	if err := json.Unmarshal(encryptedData, &testJSON); err == nil {
+		// Data is already in JSON format, return as-is
+		return encryptedData, nil
+	}
+
 	// Load encryption private key for decryption
 	privateKey, err := c.loadEncryptionPrivateKey()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load encryption private key: %w", err)
 	}
 
+	// Get algorithm from the private key
 	alg, ok := privateKey.Algorithm()
 	if !ok {
-		return nil, fmt.Errorf("invalid encryption algorithm")
+		return nil, fmt.Errorf("algorithm not found in encryption key")
 	}
 
 	// Decrypt JWE
@@ -700,30 +421,22 @@ func (c *Client) decryptUserInfo(encryptedData []byte) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decrypt JWE: %w", err)
 	}
 
-	// The decrypted content might be a JWS, verify it
-	verified, err := c.verifyJWS(decrypted)
-	if err != nil {
-		return nil, fmt.Errorf("failed to verify JWS: %w", err)
-	}
-
-	return verified, nil
+	return decrypted, nil
 }
 
-// verifyJWS verifies JWS signature
-func (c *Client) verifyJWS(jwsData []byte) ([]byte, error) {
-	// Get JWKS for verification
-	jwks, err := c.getJWKS(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get JWKS: %w", err)
+// loadEncryptionPrivateKey loads the encryption private key from file
+func (c *Client) loadEncryptionPrivateKey() (jwk.Key, error) {
+	if c.config.EncPrivateKeyPath == "" {
+		return nil, fmt.Errorf("encryption private key path not configured")
 	}
 
-	// Verify JWS with algorithm inference
-	verified, err := jws.Verify(jwsData, jws.WithKeySet(jwks, jws.WithInferAlgorithmFromKey(true)))
+	// Load JWK from file
+	jwkKey, err := c.loadJWKFromFile(c.config.EncPrivateKeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to verify JWS: %w", err)
+		return nil, fmt.Errorf("failed to load encryption private key: %w", err)
 	}
 
-	return verified, nil
+	return jwkKey, nil
 }
 
 // Close closes the client and cleans up resources

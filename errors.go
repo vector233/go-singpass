@@ -1,60 +1,26 @@
-// Package singpass defines error types for Singpass authentication operations.
+// Package singpass provides error types for the Singpass authentication client.
+// This file re-exports error types from internal/errors for backward compatibility.
 package singpass
 
-import "fmt"
+import "github.com/vector233/go-singpass/internal/errors"
 
-// ErrInvalidConfig represents a configuration validation error
-type ErrInvalidConfig struct {
-	Field string
-}
+// Re-export error types for backward compatibility
+type (
+	// ErrInvalidConfig represents configuration validation errors
+	ErrInvalidConfig = errors.ErrInvalidConfig
 
-func (e ErrInvalidConfig) Error() string {
-	return fmt.Sprintf("invalid config: %s is required", e.Field)
-}
+	// ErrInvalidState represents OAuth state validation errors
+	ErrInvalidState = errors.ErrInvalidState
 
-// ErrInvalidState represents an invalid state parameter error
-type ErrInvalidState struct {
-	Message string
-}
+	// ErrTokenValidation represents JWT token validation errors
+	ErrTokenValidation = errors.ErrTokenValidation
 
-func (e ErrInvalidState) Error() string {
-	return fmt.Sprintf("invalid state: %s", e.Message)
-}
+	// ErrHTTPRequest represents HTTP request errors
+	ErrHTTPRequest = errors.ErrHTTPRequest
 
-// ErrTokenValidation represents a token validation error
-type ErrTokenValidation struct {
-	Message string
-}
+	// ErrRedisOperation represents Redis operation errors
+	ErrRedisOperation = errors.ErrRedisOperation
 
-func (e ErrTokenValidation) Error() string {
-	return fmt.Sprintf("token validation failed: %s", e.Message)
-}
-
-// ErrHTTPRequest represents an HTTP request error
-type ErrHTTPRequest struct {
-	StatusCode int
-	Message    string
-}
-
-func (e ErrHTTPRequest) Error() string {
-	return fmt.Sprintf("HTTP request failed (status %d): %s", e.StatusCode, e.Message)
-}
-
-// ErrRedisOperation represents a Redis operation error
-type ErrRedisOperation struct {
-	Operation string
-	Message   string
-}
-
-func (e ErrRedisOperation) Error() string {
-	return fmt.Sprintf("Redis %s failed: %s", e.Operation, e.Message)
-}
-
-// ErrJWKSFetch represents a JWKS fetching error
-type ErrJWKSFetch struct {
-	Message string
-}
-
-func (e ErrJWKSFetch) Error() string {
-	return fmt.Sprintf("JWKS fetch failed: %s", e.Message)
-}
+	// ErrJWKSFetch represents JWKS fetching errors
+	ErrJWKSFetch = errors.ErrJWKSFetch
+)

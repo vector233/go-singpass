@@ -4,26 +4,9 @@ package singpass
 import (
 	"fmt"
 	"time"
-)
 
-// Default configuration values
-const (
-	DefaultScope = "openid profile"
-
-	// Environment constants
-	EnvironmentSandbox    = "sandbox"
-	EnvironmentProduction = "production"
-
-	// Singpass URLs
-	SandboxAuthURL     = "https://stg-id.singpass.gov.sg/auth"
-	SandboxTokenURL    = "https://stg-id.singpass.gov.sg/token" // #nosec G101 -- This is a public URL, not a credential
-	SandboxUserInfoURL = "https://stg-id.singpass.gov.sg/userinfo"
-	SandboxJWKSURL     = "https://stg-id.singpass.gov.sg/.well-known/keys"
-
-	ProductionAuthURL     = "https://id.singpass.gov.sg/auth"
-	ProductionTokenURL    = "https://id.singpass.gov.sg/token" // #nosec G101 -- This is a public URL, not a credential
-	ProductionUserInfoURL = "https://id.singpass.gov.sg/userinfo"
-	ProductionJWKSURL     = "https://id.singpass.gov.sg/.well-known/keys"
+	"github.com/vector233/go-singpass/internal/constants"
+	"github.com/vector233/go-singpass/internal/errors"
 )
 
 // Config holds the configuration for Singpass authentication
@@ -60,47 +43,47 @@ type Config struct {
 // SetDefaults sets default values for optional configuration fields
 func (c *Config) SetDefaults() {
 	if c.StateExpiration == 0 {
-		c.StateExpiration = 10 * time.Minute
+		c.StateExpiration = constants.DefaultStateExpiration
 	}
 	if c.NonceExpiration == 0 {
-		c.NonceExpiration = 10 * time.Minute
+		c.NonceExpiration = constants.DefaultNonceExpiration
 	}
 	if c.JWKSCacheTTL == 0 {
-		c.JWKSCacheTTL = 24 * time.Hour
+		c.JWKSCacheTTL = constants.DefaultJWKSCacheTTL
 	}
 	if c.HTTPTimeout == 0 {
-		c.HTTPTimeout = 30 * time.Second
+		c.HTTPTimeout = constants.DefaultHTTPTimeout
 	}
 	if c.Scope == "" {
-		c.Scope = DefaultScope
+		c.Scope = constants.DefaultScope
 	}
 }
 
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
 	if c.ClientID == "" {
-		return ErrInvalidConfig{Field: "ClientID"}
+		return errors.ErrInvalidConfig{Field: "ClientID"}
 	}
 	if c.RedirectURI == "" {
-		return ErrInvalidConfig{Field: "RedirectURI"}
+		return errors.ErrInvalidConfig{Field: "RedirectURI"}
 	}
 	if c.AuthURL == "" {
-		return ErrInvalidConfig{Field: "AuthURL"}
+		return errors.ErrInvalidConfig{Field: "AuthURL"}
 	}
 	if c.TokenURL == "" {
-		return ErrInvalidConfig{Field: "TokenURL"}
+		return errors.ErrInvalidConfig{Field: "TokenURL"}
 	}
 	if c.UserInfoURL == "" {
-		return ErrInvalidConfig{Field: "UserInfoURL"}
+		return errors.ErrInvalidConfig{Field: "UserInfoURL"}
 	}
 	if c.JWKSURL == "" {
-		return ErrInvalidConfig{Field: "JWKSURL"}
+		return errors.ErrInvalidConfig{Field: "JWKSURL"}
 	}
 	if c.RedisAddr == "" {
-		return ErrInvalidConfig{Field: "RedisAddr"}
+		return errors.ErrInvalidConfig{Field: "RedisAddr"}
 	}
-	if c.Environment != "" && c.Environment != EnvironmentSandbox && c.Environment != EnvironmentProduction {
-		return fmt.Errorf("environment must be '%s' or '%s', got: %s", EnvironmentSandbox, EnvironmentProduction, c.Environment)
+	if c.Environment != "" && c.Environment != constants.EnvironmentSandbox && c.Environment != constants.EnvironmentProduction {
+		return fmt.Errorf("environment must be '%s' or '%s', got: %s", constants.EnvironmentSandbox, constants.EnvironmentProduction, c.Environment)
 	}
 	return nil
 }
@@ -108,12 +91,12 @@ func (c *Config) Validate() error {
 // DefaultConfig returns a default configuration
 func DefaultConfig() *Config {
 	config := &Config{
-		Scope:           DefaultScope,
-		StateExpiration: 10 * time.Minute,
-		NonceExpiration: 10 * time.Minute,
-		JWKSCacheTTL:    24 * time.Hour,
-		HTTPTimeout:     30 * time.Second,
-		Environment:     EnvironmentSandbox,
+		Scope:           constants.DefaultScope,
+		StateExpiration: constants.DefaultStateExpiration,
+		NonceExpiration: constants.DefaultNonceExpiration,
+		JWKSCacheTTL:    constants.DefaultJWKSCacheTTL,
+		HTTPTimeout:     constants.DefaultHTTPTimeout,
+		Environment:     constants.EnvironmentSandbox,
 		RedisDB:         0,
 	}
 	return config
@@ -122,33 +105,33 @@ func DefaultConfig() *Config {
 // SandboxConfig returns a configuration for sandbox environment
 func SandboxConfig() *Config {
 	config := DefaultConfig()
-	config.Environment = EnvironmentSandbox
-	config.AuthURL = SandboxAuthURL
-	config.TokenURL = SandboxTokenURL
-	config.UserInfoURL = SandboxUserInfoURL
-	config.JWKSURL = SandboxJWKSURL
+	config.Environment = constants.EnvironmentSandbox
+	config.AuthURL = constants.SandboxAuthURL
+	config.TokenURL = constants.SandboxTokenURL
+	config.UserInfoURL = constants.SandboxUserInfoURL
+	config.JWKSURL = constants.SandboxJWKSURL
 	return config
 }
 
 // ProductionConfig returns a configuration for production environment
 func ProductionConfig() *Config {
 	config := DefaultConfig()
-	config.Environment = EnvironmentProduction
-	config.AuthURL = ProductionAuthURL
-	config.TokenURL = ProductionTokenURL
-	config.UserInfoURL = ProductionUserInfoURL
-	config.JWKSURL = ProductionJWKSURL
+	config.Environment = constants.EnvironmentProduction
+	config.AuthURL = constants.ProductionAuthURL
+	config.TokenURL = constants.ProductionTokenURL
+	config.UserInfoURL = constants.ProductionUserInfoURL
+	config.JWKSURL = constants.ProductionJWKSURL
 	return config
 }
 
 // IsSandbox returns true if the configuration is for sandbox environment
 func (c *Config) IsSandbox() bool {
-	return c.Environment == EnvironmentSandbox
+	return c.Environment == constants.EnvironmentSandbox
 }
 
 // IsProduction returns true if the configuration is for production environment
 func (c *Config) IsProduction() bool {
-	return c.Environment == EnvironmentProduction
+	return c.Environment == constants.EnvironmentProduction
 }
 
 // GetRedisKeyPrefix returns the Redis key prefix based on environment

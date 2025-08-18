@@ -12,6 +12,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/vector233/go-singpass/internal/constants"
+	"github.com/vector233/go-singpass/internal/utils"
 )
 
 func TestConfig_SetDefaults(t *testing.T) {
@@ -276,23 +279,20 @@ func TestClient_ExchangeCodeForToken(t *testing.T) {
 
 // Test PKCE code generation
 func TestPKCEGeneration(t *testing.T) {
-	client := setupTestClient(t)
-
 	// Test code verifier generation
-	codeVerifier, err := client.generateRandomString(128)
+	codeVerifier, err := utils.GenerateRandomBase64(32)
 	require.NoError(t, err)
-	assert.Len(t, codeVerifier, 128) // Base64URL encoded 96 bytes = 128 chars
 	assert.NotEmpty(t, codeVerifier)
 
 	// Test code challenge generation
-	codeChallenge := client.generateCodeChallenge(codeVerifier)
+	codeChallenge := utils.GenerateCodeChallenge(codeVerifier)
 	assert.NotEmpty(t, codeChallenge)
 	assert.NotEqual(t, codeVerifier, codeChallenge)
 
 	// Test that different verifiers produce different challenges
-	codeVerifier2, err := client.generateRandomString(128)
+	codeVerifier2, err := utils.GenerateRandomBase64(32)
 	require.NoError(t, err)
-	codeChallenge2 := client.generateCodeChallenge(codeVerifier2)
+	codeChallenge2 := utils.GenerateCodeChallenge(codeVerifier2)
 	assert.NotEqual(t, codeChallenge, codeChallenge2)
 }
 
@@ -300,20 +300,18 @@ func TestPKCEGeneration(t *testing.T) {
 func TestEnvironmentConfigs(t *testing.T) {
 	// Test sandbox config
 	sandboxConfig := SandboxConfig()
-	assert.Equal(t, EnvironmentSandbox, sandboxConfig.Environment)
+	assert.Equal(t, constants.EnvironmentSandbox, sandboxConfig.Environment)
 	assert.True(t, sandboxConfig.IsSandbox())
 	assert.False(t, sandboxConfig.IsProduction())
 	assert.Contains(t, sandboxConfig.AuthURL, "stg-id.singpass.gov.sg")
-	assert.Equal(t, "singpass:sandbox:", sandboxConfig.GetRedisKeyPrefix())
 
 	// Test production config
 	prodConfig := ProductionConfig()
-	assert.Equal(t, EnvironmentProduction, prodConfig.Environment)
+	assert.Equal(t, constants.EnvironmentProduction, prodConfig.Environment)
 	assert.False(t, prodConfig.IsSandbox())
 	assert.True(t, prodConfig.IsProduction())
 	assert.Contains(t, prodConfig.AuthURL, "id.singpass.gov.sg")
 	assert.NotContains(t, prodConfig.AuthURL, "stg-")
-	assert.Equal(t, "singpass:prod:", prodConfig.GetRedisKeyPrefix())
 }
 
 // Test UserInfo methods
