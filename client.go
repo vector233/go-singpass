@@ -36,6 +36,30 @@ const (
 	nonceExpiration = 10 * time.Minute
 )
 
+// ClientInterface defines the contract for Singpass authentication operations
+type ClientInterface interface {
+	// GenerateAuthURL generates the authorization URL for Singpass authentication
+	// Returns the URL that users should be redirected to for authentication
+	GenerateAuthURL(ctx context.Context) (string, error)
+
+	// ExchangeCodeForUserInfo processes the callback from Singpass after user authentication
+	// Takes the authorization code and state from the callback URL
+	// Returns the complete user information after token validation
+	ExchangeCodeForUserInfo(ctx context.Context, code, state string) (*UserInfo, error)
+
+	// ExchangeCodeForTokens processes the callback and returns only the validated tokens
+	// Takes the authorization code and state from the callback URL
+	// Returns the token response after validation, without fetching user info
+	ExchangeCodeForTokens(ctx context.Context, code, state string) (*TokenResponse, error)
+
+	// GetUserInfo retrieves additional user information using the access token
+	// This method calls the Singpass UserInfo endpoint for detailed user data
+	GetUserInfo(ctx context.Context, accessToken string) (*UserInfo, error)
+
+	// Close closes the client and cleans up resources (Redis connection, etc.)
+	Close() error
+}
+
 // StateData represents OAuth state information
 type StateData struct {
 	CodeVerifier string `json:"code_verifier"`
@@ -43,12 +67,16 @@ type StateData struct {
 }
 
 // Client represents the Singpass authentication client
+// It implements the ClientInterface
 type Client struct {
 	config      Config
 	redisClient *redis.Client
 	httpClient  *http.Client
 	jwksCache   *jwk.Cache
 }
+
+// Ensure Client implements ClientInterface at compile time
+var _ ClientInterface = (*Client)(nil)
 
 // NewClient creates a new Singpass client with the given configuration
 func NewClient(config *Config) (*Client, error) {
@@ -145,8 +173,10 @@ func (c *Client) GenerateAuthURL(ctx context.Context) (string, error) {
 	return authURL, nil
 }
 
-// HandleCallback handles the OAuth2 callback and returns user information
-func (c *Client) HandleCallback(ctx context.Context, code, state string) (*UserInfo, error) {
+// ExchangeCodeForTokens processes the callback and returns only the validated tokens
+// Takes the authorization code and state from the callback URL
+// Returns the token response after validation, without fetching user info
+func (c *Client) ExchangeCodeForTokens(ctx context.Context, code, state string) (*TokenResponse, error) {
 	// Retrieve and validate state data
 	stateData, err := c.getStateData(ctx, state)
 	if err != nil {
@@ -159,10 +189,26 @@ func (c *Client) HandleCallback(ctx context.Context, code, state string) (*UserI
 		return nil, fmt.Errorf("failed to exchange code for tokens: %w", err)
 	}
 
-	// Validate ID token (for security, but we'll get user info from UserInfo endpoint)
+	// Validate ID token
 	_, err = c.validateIDToken(ctx, tokenResp.IDToken, stateData.Nonce)
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate ID token: %w", err)
+	}
+
+	// Clean up state data
+	c.deleteStateData(ctx, state)
+
+	return tokenResp, nil
+}
+
+// ExchangeCodeForUserInfo processes the callback from Singpass after user authentication
+// Takes the authorization code and state from the callback URL
+// Returns the complete user information after token validation
+func (c *Client) ExchangeCodeForUserInfo(ctx context.Context, code, state string) (*UserInfo, error) {
+	// Get validated tokens first
+	tokenResp, err := c.ExchangeCodeForTokens(ctx, code, state)
+	if err != nil {
+		return nil, err
 	}
 
 	// Get user info from UserInfo endpoint using access token
@@ -170,9 +216,6 @@ func (c *Client) HandleCallback(ctx context.Context, code, state string) (*UserI
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user info: %w", err)
 	}
-
-	// Clean up state data
-	c.deleteStateData(ctx, state)
 
 	return userInfo, nil
 }
