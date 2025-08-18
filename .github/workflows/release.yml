@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Match semantic version tags, e.g. v1.0.0, v2.1.3
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Write permission required to create release
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch complete history
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: 1.21
+    
+    - name: Run tests
+      run: |
+        go test -v ./...
+    
+    - name: Verify module
+      run: |
+        go mod verify
+        go mod tidy
+        git diff --exit-code go.mod go.sum || (echo "go.mod or go.sum is not up to date" && exit 1)
+    
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Get current tag
+        CURRENT_TAG=${GITHUB_REF#refs/tags/}
+        
+        # Get previous tag
+        PREVIOUS_TAG=$(git describe --tags --abbrev=0 $CURRENT_TAG^ 2>/dev/null || echo "")
+        
+        echo "## 🚀 Release $CURRENT_TAG" > CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        
+        if [ -n "$PREVIOUS_TAG" ]; then
+          echo "### 📝 Changes since $PREVIOUS_TAG" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          
+          # Generate commit log
+          git log --pretty=format:"- %s (%h)" $PREVIOUS_TAG..$CURRENT_TAG >> CHANGELOG.md
+        else
+          echo "### 📝 Initial Release" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "- Initial release of Go Singpass OIDC library" >> CHANGELOG.md
+        fi
+        
+        echo "" >> CHANGELOG.md
+        echo "### 📦 Installation" >> CHANGELOG.md
+        echo "" >> CHANGELOG.md
+        echo "\`\`\`bash" >> CHANGELOG.md
+        echo "go get github.com/vector233/go-singpass@$CURRENT_TAG" >> CHANGELOG.md
+        echo "\`\`\`" >> CHANGELOG.md
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: Release ${{ github.ref_name }}
+        body_path: CHANGELOG.md
+        draft: false
+        prerelease: ${{ contains(github.ref_name, '-') }}  # Mark as prerelease if tag contains '-'
+        generate_release_notes: true  # Auto-generate release notes
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Update Go module proxy
+      run: |
+        # Trigger Go module proxy update
+        curl -X POST "https://proxy.golang.org/github.com/vector233/go-singpass/@v/${{ github.ref_name }}.info" || true

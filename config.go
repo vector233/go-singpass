@@ -1,7 +1,29 @@
+// Package singpass provides configuration management for Singpass OIDC authentication.
 package singpass
 
 import (
+	"fmt"
 	"time"
+)
+
+// Default configuration values
+const (
+	DefaultScope = "openid profile"
+
+	// Environment constants
+	EnvironmentSandbox    = "sandbox"
+	EnvironmentProduction = "production"
+
+	// Singpass URLs
+	SandboxAuthURL     = "https://stg-id.singpass.gov.sg/auth"
+	SandboxTokenURL    = "https://stg-id.singpass.gov.sg/token" // #nosec G101 -- This is a public URL, not a credential
+	SandboxUserInfoURL = "https://stg-id.singpass.gov.sg/userinfo"
+	SandboxJWKSURL     = "https://stg-id.singpass.gov.sg/.well-known/keys"
+
+	ProductionAuthURL     = "https://id.singpass.gov.sg/auth"
+	ProductionTokenURL    = "https://id.singpass.gov.sg/token" // #nosec G101 -- This is a public URL, not a credential
+	ProductionUserInfoURL = "https://id.singpass.gov.sg/userinfo"
+	ProductionJWKSURL     = "https://id.singpass.gov.sg/.well-known/keys"
 )
 
 // Config holds the configuration for Singpass authentication
@@ -30,6 +52,9 @@ type Config struct {
 	NonceExpiration time.Duration `json:"nonce_expiration,omitempty"`
 	JWKSCacheTTL    time.Duration `json:"jwks_cache_ttl,omitempty"`
 	HTTPTimeout     time.Duration `json:"http_timeout,omitempty"`
+
+	// Environment
+	Environment string `json:"environment,omitempty"`
 }
 
 // SetDefaults sets default values for optional configuration fields
@@ -47,7 +72,7 @@ func (c *Config) SetDefaults() {
 		c.HTTPTimeout = 30 * time.Second
 	}
 	if c.Scope == "" {
-		c.Scope = "openid profile"
+		c.Scope = DefaultScope
 	}
 }
 
@@ -74,5 +99,62 @@ func (c *Config) Validate() error {
 	if c.RedisAddr == "" {
 		return ErrInvalidConfig{Field: "RedisAddr"}
 	}
+	if c.Environment != "" && c.Environment != EnvironmentSandbox && c.Environment != EnvironmentProduction {
+		return fmt.Errorf("environment must be '%s' or '%s', got: %s", EnvironmentSandbox, EnvironmentProduction, c.Environment)
+	}
 	return nil
+}
+
+// DefaultConfig returns a default configuration
+func DefaultConfig() *Config {
+	config := &Config{
+		Scope:           DefaultScope,
+		StateExpiration: 10 * time.Minute,
+		NonceExpiration: 10 * time.Minute,
+		JWKSCacheTTL:    24 * time.Hour,
+		HTTPTimeout:     30 * time.Second,
+		Environment:     EnvironmentSandbox,
+		RedisDB:         0,
+	}
+	return config
+}
+
+// SandboxConfig returns a configuration for sandbox environment
+func SandboxConfig() *Config {
+	config := DefaultConfig()
+	config.Environment = EnvironmentSandbox
+	config.AuthURL = SandboxAuthURL
+	config.TokenURL = SandboxTokenURL
+	config.UserInfoURL = SandboxUserInfoURL
+	config.JWKSURL = SandboxJWKSURL
+	return config
+}
+
+// ProductionConfig returns a configuration for production environment
+func ProductionConfig() *Config {
+	config := DefaultConfig()
+	config.Environment = EnvironmentProduction
+	config.AuthURL = ProductionAuthURL
+	config.TokenURL = ProductionTokenURL
+	config.UserInfoURL = ProductionUserInfoURL
+	config.JWKSURL = ProductionJWKSURL
+	return config
+}
+
+// IsSandbox returns true if the configuration is for sandbox environment
+func (c *Config) IsSandbox() bool {
+	return c.Environment == EnvironmentSandbox
+}
+
+// IsProduction returns true if the configuration is for production environment
+func (c *Config) IsProduction() bool {
+	return c.Environment == EnvironmentProduction
+}
+
+// GetRedisKeyPrefix returns the Redis key prefix based on environment
+func (c *Config) GetRedisKeyPrefix() string {
+	if c.IsSandbox() {
+		return "singpass:sandbox:"
+	}
+	return "singpass:prod:"
 }

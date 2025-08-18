@@ -1,3 +1,4 @@
+// Package singpass defines error types for Singpass authentication operations.
 package singpass
 
 import "fmt"

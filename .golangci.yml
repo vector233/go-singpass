@@ -2,25 +2,35 @@ run:
   timeout: 5m
   issues-exit-code: 1
   tests: true
-  skip-dirs:
-    - vendor
-  skip-files:
-    - ".*\.pb\.go$"
-    - ".*_test\.go$"
 
 output:
-  format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
+  formats:
+    - format: colored-line-number
+      print-issued-lines: true
+      print-linter-name: true
 
 linters-settings:
+  depguard:
+    rules:
+      Main:
+        files:
+          - $all
+        allow:
+          - $gostd
+          - github.com/vector233/go-singpass
+          - github.com/lestrrat-go/jwx/v3
+          - github.com/lestrrat-go/httprc/v3
+          - github.com/redis/go-redis/v9
   dupl:
     threshold: 100
   funlen:
     lines: 100
     statements: 50
   gci:
-    local-prefixes: github.com/your-username/go-singpass
+    sections:
+      - standard
+      - default
+      - prefix(github.com/vector233/go-singpass)
   goconst:
     min-len: 2
     min-occurrences: 2
@@ -41,14 +51,17 @@ linters-settings:
     min-complexity: 15
   goimports:
     local-prefixes: github.com/your-username/go-singpass
-  golint:
-    min-confidence: 0
-  gomnd:
-    settings:
-      mnd:
-        checks: argument,case,condition,operation,return,assign
+  mnd:
+    checks:
+      - argument
+      - case
+      - condition
+      - operation
+      - return
+      - assign
   govet:
-    check-shadowing: true
+    enable:
+      - shadow
     settings:
       printf:
         funcs:
@@ -72,12 +85,10 @@ linters:
   disable-all: true
   enable:
     - bodyclose
-    - deadcode
     - depguard
     - dogsled
     - dupl
     - errcheck
-    - exportloopref
     - funlen
     - gochecknoinits
     - goconst
@@ -85,44 +96,53 @@ linters:
     - gocyclo
     - gofmt
     - goimports
-    - golint
-    - gomnd
+    - mnd
     - goprintffuncname
     - gosec
     - gosimple
     - govet
     - ineffassign
-    - interfacer
     - lll
     - misspell
     - nakedret
     - noctx
     - nolintlint
+    - revive
     - rowserrcheck
-    - scopelint
     - staticcheck
-    - structcheck
     - stylecheck
     - typecheck
     - unconvert
     - unparam
     - unused
-    - varcheck
     - whitespace
 
 issues:
+  exclude-files:
+    - ".*\\.pb\\.go$"
+    - ".*_test\\.go$"
+  exclude-dirs:
+    - vendor
   exclude-rules:
     - path: _test\.go
       linters:
-        - gomnd
+        - mnd
         - funlen
         - gocyclo
+    - path: example/
+      linters:
+        - mnd
+        - revive
     - linters:
         - lll
       source: "^//go:generate "
+    - linters:
+        - mnd
+      text: "Magic number.*in <(assign|operation|argument)> detected"
   exclude:
     - 'declaration of "err" shadows declaration at'
     - 'G104: Errors unhandled'
+    - 'unused-parameter.*consider removing or renaming it as _'
   exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0

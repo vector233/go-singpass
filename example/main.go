@@ -4,32 +4,26 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
+	"time"
 
-	"github.com/your-username/go-singpass"
+	"github.com/vector233/go-singpass"
 )
 
 func main() {
-	// Initialize Singpass client
-	config := singpass.Config{
-		ClientID:    os.Getenv("SINGPASS_CLIENT_ID"),
-		RedirectURI: "http://localhost:8080/callback",
-		AuthURL:     "https://stg-id.singpass.gov.sg/auth",
-		TokenURL:    "https://stg-id.singpass.gov.sg/token",
-		UserInfoURL: "https://stg-id.singpass.gov.sg/userinfo",
-		JWKSURL:     "https://stg-id.singpass.gov.sg/.well-known/keys",
-		Issuer:      "https://stg-id.singpass.gov.sg",
-		Scope:       "openid profile",
-		RedisAddr:   "localhost:6379",
-		RedisDB:     0,
-	}
+	// Initialize Singpass client with sandbox configuration
+	config := singpass.SandboxConfig()
+	config.ClientID = "" // 设置环境变量 SINGPASS_CLIENT_ID
+	config.RedirectURI = ""
+	config.Scope = "openid name uinfin sex dob nationality regadd mobileno email housingtype"
+	config.RedisAddr = "localhost:6379"
+	config.RedisDB = 0
+	config.SigPrivateKeyPath = "keys/test-singpass-jwk-sig-priv.json"
+	config.EncPrivateKeyPath = "keys/test-singpass-jwk-enc-priv.json"
 
 	client, err := singpass.NewClient(config)
 	if err != nil {
 		log.Fatal("Failed to create Singpass client:", err)
 	}
-	defer client.Close()
-
 	// Setup HTTP handlers
 	http.HandleFunc("/login", handleLogin(client))
 	http.HandleFunc("/callback", handleCallback(client))
@@ -37,7 +31,13 @@ func main() {
 
 	fmt.Println("Server starting on :8080")
 	fmt.Println("Visit http://localhost:8080 to start")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	server := &http.Server{
+		Addr:         ":8080",
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+	log.Fatal(server.ListenAndServe())
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +55,10 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 </html>
 `
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
+	if _, err := w.Write([]byte(html)); err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 }
 
 func handleLogin(client *singpass.Client) http.HandlerFunc {
@@ -109,10 +112,13 @@ func handleCallback(client *singpass.Client) http.HandlerFunc {
     <a href="/"><button>Back to Home</button></a>
 </body>
 </html>
-`, userInfo.Name, userInfo.UINFIN, userInfo.Sex, userInfo.DateOfBirth,
-			userInfo.Nationality, userInfo.MobileNumber, userInfo.Email, userInfo.GetFormattedAddress())
+`, userInfo.GetName(), userInfo.GetUINFIN(), userInfo.Sex.Code, userInfo.DOB.Value,
+			userInfo.Nationality.Code, userInfo.MobileNo.Number.Value, userInfo.Email.Value, userInfo.GetAddress())
 
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(html))
+		if _, err := w.Write([]byte(html)); err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 	}
 }
