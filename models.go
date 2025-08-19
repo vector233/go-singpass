@@ -28,10 +28,10 @@ type UserInfo struct {
 	Housingtype CodedField `json:"housingtype"` // Housing type code
 
 	// Standard OIDC claims as defined in OpenID Connect specification
-	Iss string `json:"iss"` // Issuer - identifies the Singpass OIDC provider
-	Sub string `json:"sub"` // Subject - unique identifier for the user
-	Aud string `json:"aud"` // Audience - client ID that this token is intended for
-	Iat int64  `json:"iat"` // Issued At - timestamp when the token was issued
+	Iss string `json:"iss"`           // Issuer - identifies the Singpass OIDC provider
+	Sub string `json:"sub"`           // Subject - unique identifier for the user
+	Aud string `json:"aud"`           // Audience - client ID that this token is intended for
+	Iat int64  `json:"iat"`           // Issued At - timestamp when the token was issued
 	Exp int64  `json:"exp,omitempty"` // Expiration Time - timestamp when the token expires
 }
 

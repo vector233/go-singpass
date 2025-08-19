@@ -7,7 +7,7 @@ import (
 	"encoding/base64"
 	"strings"
 
-	"github.com/google/uuid"
+	"github.com/google/uuid" //nolint:depguard // UUID generation is required for crypto operations
 )
 
 // GenerateRandomBase64 generates a base64 encoded random string

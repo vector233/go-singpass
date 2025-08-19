@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -27,9 +26,6 @@ func TestConfig_SetDefaults(t *testing.T) {
 	if config.NonceExpiration != 10*time.Minute {
 		t.Errorf("Expected NonceExpiration to be 10m, got %v", config.NonceExpiration)
 	}
-	if config.JWKSCacheTTL != 24*time.Hour {
-		t.Errorf("Expected JWKSCacheTTL to be 24h, got %v", config.JWKSCacheTTL)
-	}
 	if config.HTTPTimeout != 30*time.Second {
 		t.Errorf("Expected HTTPTimeout to be 30s, got %v", config.HTTPTimeout)
 	}
@@ -45,7 +41,7 @@ func TestConfig_Validate(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "valid config",
+			name: "valid config with memory storage",
 			config: Config{
 				ClientID:    "test-client",
 				RedirectURI: "http://localhost:8080/callback",
@@ -53,6 +49,20 @@ func TestConfig_Validate(t *testing.T) {
 				TokenURL:    "https://example.com/token",
 				UserInfoURL: "https://example.com/userinfo",
 				JWKSURL:     "https://example.com/jwks",
+				UseRedis:    false, // Default memory storage
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid config with redis storage",
+			config: Config{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+				AuthURL:     "https://example.com/auth",
+				TokenURL:    "https://example.com/token",
+				UserInfoURL: "https://example.com/userinfo",
+				JWKSURL:     "https://example.com/jwks",
+				UseRedis:    true,
 				RedisAddr:   "localhost:6379",
 			},
 			wantErr: false,
@@ -70,7 +80,7 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "missing redis addr",
+			name: "missing redis addr when UseRedis is true",
 			config: Config{
 				ClientID:    "test-client",
 				RedirectURI: "http://localhost:8080/callback",
@@ -78,8 +88,22 @@ func TestConfig_Validate(t *testing.T) {
 				TokenURL:    "https://example.com/token",
 				UserInfoURL: "https://example.com/userinfo",
 				JWKSURL:     "https://example.com/jwks",
+				UseRedis:    true, // Redis is enabled but no address provided
 			},
 			wantErr: true,
+		},
+		{
+			name: "missing redis addr when UseRedis is false (should pass)",
+			config: Config{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+				AuthURL:     "https://example.com/auth",
+				TokenURL:    "https://example.com/token",
+				UserInfoURL: "https://example.com/userinfo",
+				JWKSURL:     "https://example.com/jwks",
+				UseRedis:    false, // Memory storage, no Redis needed
+			},
+			wantErr: false,
 		},
 	}
 
@@ -161,21 +185,9 @@ func TestAuthState_IsExpired(t *testing.T) {
 	}
 }
 
-// Integration test helper - requires Redis to be running
+// Test helper - uses memory storage (no Redis dependency)
 func setupTestClient(t *testing.T) *Client {
-	// Skip if Redis is not available
-	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   15, // Use test database
-	})
-
-	ctx := context.Background()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		t.Skip("Redis not available, skipping integration test")
-	}
-	rdb.Close()
-
-	// Use Singpass staging endpoints for testing
+	// Use Singpass staging endpoints for testing with memory storage
 	config := Config{
 		ClientID:    "test-client",
 		RedirectURI: "http://localhost:8080/callback",
@@ -184,8 +196,7 @@ func setupTestClient(t *testing.T) *Client {
 		UserInfoURL: "https://stg-id.singpass.gov.sg/userinfo",
 		JWKSURL:     "https://stg-id.singpass.gov.sg/.well-known/keys",
 		Issuer:      "https://stg-id.singpass.gov.sg",
-		RedisAddr:   "localhost:6379",
-		RedisDB:     15,
+		UseRedis:    false, // Use memory storage for testing
 	}
 
 	client, err := NewClient(&config)

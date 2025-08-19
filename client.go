@@ -15,14 +15,12 @@ import (
 	"time"
 
 	"github.com/google/uuid" //nolint:depguard // UUID generation is required for OIDC state
-	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwe"
 	"github.com/lestrrat-go/jwx/v3/jwk"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/vector233/go-singpass/internal/auth"
-	"github.com/vector233/go-singpass/internal/errors"
 	"github.com/vector233/go-singpass/internal/utils"
 )
 
@@ -57,8 +55,7 @@ type Client struct {
 	stateManager   *auth.StateManager
 	tokenValidator *auth.TokenValidator
 	httpClient     *http.Client
-	jwksCache      *jwk.Cache
-	redisClient    *redis.Client
+	redisClient    *redis.Client // Only used when UseRedis is true
 }
 
 // Ensure Client implements ClientInterface at compile time
@@ -71,18 +68,21 @@ func NewClient(config *Config) (*Client, error) {
 		return nil, err
 	}
 
-	// Initialize Redis client
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     config.RedisAddr,
-		Password: config.RedisPassword,
-		DB:       config.RedisDB,
-	})
+	// Initialize Redis client only if UseRedis is true
+	var redisClient *redis.Client
+	if config.UseRedis {
+		redisClient = redis.NewClient(&redis.Options{
+			Addr:     config.RedisAddr,
+			Password: config.RedisPassword,
+			DB:       config.RedisDB,
+		})
 
-	// Test Redis connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		return nil, errors.ErrRedisOperation{Operation: "ping", Message: err.Error()}
+		// Test Redis connection
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := redisClient.Ping(ctx).Err(); err != nil {
+			return nil, fmt.Errorf("redis ping failed: %w", err)
+		}
 	}
 
 	// Initialize HTTP client
@@ -90,34 +90,22 @@ func NewClient(config *Config) (*Client, error) {
 		Timeout: config.HTTPTimeout,
 	}
 
-	// Initialize JWKS cache
-	jwksCache, err := jwk.NewCache(context.Background(), httprc.NewClient())
-	if err != nil {
-		return nil, fmt.Errorf("failed to create JWKS cache: %w", err)
+	// Initialize state manager based on configuration
+	var stateManager *auth.StateManager
+	if config.UseRedis {
+		stateManager = auth.NewStateManagerWithRedis(redisClient, config.StateExpiration)
+	} else {
+		stateManager = auth.NewStateManagerWithMemory(config.StateExpiration)
 	}
-
-	// Register JWKS URL with cache
-	err = jwksCache.Register(context.Background(),
-		config.JWKSURL,
-		jwk.WithMinInterval(time.Hour),    // min 1 hour
-		jwk.WithMaxInterval(24*time.Hour), // max 24 hours
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to register JWKS URL in cache: %w", err)
-	}
-
-	// Initialize state manager
-	stateManager := auth.NewStateManager(redisClient, config.StateExpiration)
 
 	// Initialize token validator
-	tokenValidator := auth.NewTokenValidator(jwksCache, config.JWKSURL, config.Issuer, config.ClientID)
+	tokenValidator := auth.NewTokenValidator(config.JWKSURL, config.Issuer, config.ClientID)
 
 	client := &Client{
 		config:         *config,
 		stateManager:   stateManager,
 		tokenValidator: tokenValidator,
 		httpClient:     httpClient,
-		jwksCache:      jwksCache,
 		redisClient:    redisClient,
 	}
 
@@ -172,7 +160,7 @@ func (c *Client) ExchangeCodeForTokens(ctx context.Context, code, state string) 
 	// Retrieve and validate state data
 	stateData, err := c.stateManager.Get(ctx, state)
 	if err != nil {
-		return nil, errors.ErrInvalidState{Message: "state not found or expired"}
+		return nil, fmt.Errorf("invalid state: state not found or expired")
 	}
 
 	// Exchange code for tokens
@@ -252,7 +240,7 @@ func (c *Client) exchangeCodeForTokens(ctx context.Context, code, codeVerifier s
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, errors.ErrHTTPRequest{StatusCode: resp.StatusCode, Message: string(body)}
+		return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var tokenResp TokenResponse
@@ -282,15 +270,12 @@ func (c *Client) createClientAssertion(_ context.Context) (string, error) {
 		"exp": now.Add(2 * time.Minute).Unix(),
 	}
 
-	// Create and sign JWT
-	token, err := jwt.NewBuilder().
-		Claim("iss", claims["iss"]).
-		Claim("sub", claims["sub"]).
-		Claim("aud", claims["aud"]).
-		Claim("jti", claims["jti"]).
-		Claim("iat", claims["iat"]).
-		Claim("exp", claims["exp"]).
-		Build()
+	// Create JWT token from claims map
+	builder := jwt.NewBuilder()
+	for key, value := range claims {
+		builder = builder.Claim(key, value)
+	}
+	token, err := builder.Build()
 	if err != nil {
 		return "", fmt.Errorf("failed to build JWT: %w", err)
 	}
@@ -312,17 +297,7 @@ func (c *Client) createClientAssertion(_ context.Context) (string, error) {
 
 // loadPrivateKey loads the private key from file
 func (c *Client) loadPrivateKey() (jwk.Key, error) {
-	if c.config.SigPrivateKeyPath == "" {
-		return nil, fmt.Errorf("signature private key path not configured")
-	}
-
-	// Load JWK from file
-	jwkKey, err := c.loadJWKFromFile(c.config.SigPrivateKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load private key: %w", err)
-	}
-
-	return jwkKey, nil
+	return c.loadPrivateKeyFromPath(c.config.SigPrivateKeyPath, "signature")
 }
 
 // loadJWKFromFile loads a JWK from file
@@ -426,14 +401,19 @@ func (c *Client) decryptUserInfo(encryptedData []byte) ([]byte, error) {
 
 // loadEncryptionPrivateKey loads the encryption private key from file
 func (c *Client) loadEncryptionPrivateKey() (jwk.Key, error) {
-	if c.config.EncPrivateKeyPath == "" {
-		return nil, fmt.Errorf("encryption private key path not configured")
+	return c.loadPrivateKeyFromPath(c.config.EncPrivateKeyPath, "encryption")
+}
+
+// loadPrivateKeyFromPath loads a private key from the specified path
+func (c *Client) loadPrivateKeyFromPath(keyPath, keyType string) (jwk.Key, error) {
+	if keyPath == "" {
+		return nil, fmt.Errorf("%s private key path not configured", keyType)
 	}
 
 	// Load JWK from file
-	jwkKey, err := c.loadJWKFromFile(c.config.EncPrivateKeyPath)
+	jwkKey, err := c.loadJWKFromFile(keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load encryption private key: %w", err)
+		return nil, fmt.Errorf("failed to load %s private key: %w", keyType, err)
 	}
 
 	return jwkKey, nil

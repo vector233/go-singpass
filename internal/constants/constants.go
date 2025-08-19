@@ -39,6 +39,5 @@ const (
 const (
 	DefaultStateExpiration = 10 * time.Minute
 	DefaultNonceExpiration = 10 * time.Minute
-	DefaultJWKSCacheTTL    = 24 * time.Hour
 	DefaultHTTPTimeout     = 30 * time.Second
 )

@@ -15,19 +15,17 @@ import (
 
 // TokenValidator handles JWT token validation
 type TokenValidator struct {
-	jwksCache *jwk.Cache
-	jwksURL   string
-	issuer    string
-	clientID  string
+	jwksURL  string
+	issuer   string
+	clientID string
 }
 
 // NewTokenValidator creates a new token validator
-func NewTokenValidator(jwksCache *jwk.Cache, jwksURL, issuer, clientID string) *TokenValidator {
+func NewTokenValidator(jwksURL, issuer, clientID string) *TokenValidator {
 	return &TokenValidator{
-		jwksCache: jwksCache,
-		jwksURL:   jwksURL,
-		issuer:    issuer,
-		clientID:  clientID,
+		jwksURL:  jwksURL,
+		issuer:   issuer,
+		clientID: clientID,
 	}
 }
 
@@ -107,7 +105,7 @@ func (tv *TokenValidator) validateTokenClaims(claims map[string]interface{}, exp
 
 // getJWKS retrieves the JWKS from cache or fetches it
 func (tv *TokenValidator) getJWKS(ctx context.Context) (jwk.Set, error) {
-	jwks, err := tv.jwksCache.Lookup(ctx, tv.jwksURL)
+	jwks, err := jwk.Fetch(ctx, tv.jwksURL)
 	if err != nil {
 		return nil, errors.ErrJWKSFetch{Message: err.Error()}
 	}

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/vector233/go-singpass/internal/constants"
-	"github.com/vector233/go-singpass/internal/errors"
 )
 
 // Config holds the configuration for Singpass authentication
@@ -25,15 +24,15 @@ type Config struct {
 	SigPrivateKeyPath string `json:"sig_private_key_path,omitempty"`
 	EncPrivateKeyPath string `json:"enc_private_key_path,omitempty"`
 
-	// Redis Configuration for state management
-	RedisAddr     string `json:"redis_addr"`
-	RedisPassword string `json:"redis_password,omitempty"`
-	RedisDB       int    `json:"redis_db"`
+	// State Storage Configuration
+	UseRedis      bool   `json:"use_redis,omitempty"`      // Whether to use Redis for state storage (default: false, uses memory)
+	RedisAddr     string `json:"redis_addr,omitempty"`     // Redis address (only used when UseRedis is true)
+	RedisPassword string `json:"redis_password,omitempty"` // Redis password (optional)
+	RedisDB       int    `json:"redis_db,omitempty"`       // Redis database number (optional)
 
 	// Timeouts and Expiration
 	StateExpiration time.Duration `json:"state_expiration,omitempty"`
 	NonceExpiration time.Duration `json:"nonce_expiration,omitempty"`
-	JWKSCacheTTL    time.Duration `json:"jwks_cache_ttl,omitempty"`
 	HTTPTimeout     time.Duration `json:"http_timeout,omitempty"`
 
 	// Environment
@@ -48,9 +47,6 @@ func (c *Config) SetDefaults() {
 	if c.NonceExpiration == 0 {
 		c.NonceExpiration = constants.DefaultNonceExpiration
 	}
-	if c.JWKSCacheTTL == 0 {
-		c.JWKSCacheTTL = constants.DefaultJWKSCacheTTL
-	}
 	if c.HTTPTimeout == 0 {
 		c.HTTPTimeout = constants.DefaultHTTPTimeout
 	}
@@ -62,28 +58,30 @@ func (c *Config) SetDefaults() {
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
 	if c.ClientID == "" {
-		return errors.ErrInvalidConfig{Field: "ClientID"}
+		return fmt.Errorf("invalid config: ClientID is required")
 	}
 	if c.RedirectURI == "" {
-		return errors.ErrInvalidConfig{Field: "RedirectURI"}
+		return fmt.Errorf("invalid config: RedirectURI is required")
 	}
 	if c.AuthURL == "" {
-		return errors.ErrInvalidConfig{Field: "AuthURL"}
+		return fmt.Errorf("invalid config: AuthURL is required")
 	}
 	if c.TokenURL == "" {
-		return errors.ErrInvalidConfig{Field: "TokenURL"}
+		return fmt.Errorf("invalid config: TokenURL is required")
 	}
 	if c.UserInfoURL == "" {
-		return errors.ErrInvalidConfig{Field: "UserInfoURL"}
+		return fmt.Errorf("invalid config: UserInfoURL is required")
 	}
 	if c.JWKSURL == "" {
-		return errors.ErrInvalidConfig{Field: "JWKSURL"}
+		return fmt.Errorf("invalid config: JWKSURL is required")
 	}
-	if c.RedisAddr == "" {
-		return errors.ErrInvalidConfig{Field: "RedisAddr"}
+	// Only validate Redis configuration if UseRedis is true
+	if c.UseRedis && c.RedisAddr == "" {
+		return fmt.Errorf("invalid config: RedisAddr is required when UseRedis is true")
 	}
 	if c.Environment != "" && c.Environment != constants.EnvironmentSandbox && c.Environment != constants.EnvironmentProduction {
-		return fmt.Errorf("environment must be '%s' or '%s', got: %s", constants.EnvironmentSandbox, constants.EnvironmentProduction, c.Environment)
+		return fmt.Errorf("environment must be '%s' or '%s', got: %s",
+			constants.EnvironmentSandbox, constants.EnvironmentProduction, c.Environment)
 	}
 	return nil
 }
@@ -94,7 +92,6 @@ func DefaultConfig() *Config {
 		Scope:           constants.DefaultScope,
 		StateExpiration: constants.DefaultStateExpiration,
 		NonceExpiration: constants.DefaultNonceExpiration,
-		JWKSCacheTTL:    constants.DefaultJWKSCacheTTL,
 		HTTPTimeout:     constants.DefaultHTTPTimeout,
 		Environment:     constants.EnvironmentSandbox,
 		RedisDB:         0,
