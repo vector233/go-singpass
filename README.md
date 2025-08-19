@@ -373,9 +373,16 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
+## Troubleshooting
+
+For common issues and solutions, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+**Most Common Issue:** JWT signing errors due to incorrect JWK algorithm settings. Make sure your signing key JWK file uses `"alg": "ES256"` for ECDSA keys, not `"RS256"`.
+
 ## Support
 
 For issues and questions:
+- Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues
 - Create an issue on GitHub
 - Check the Singpass developer documentation
 - Review the test cases for usage examples

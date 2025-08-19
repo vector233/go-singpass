@@ -1,0 +1,9 @@
+{
+  "kty": "EC",
+  "use": "sig",
+  "alg": "ES256",
+  "crv": "P-256",
+  "x": "example-x-coordinate-base64url-encoded",
+  "y": "example-y-coordinate-base64url-encoded",
+  "d": "example-private-key-base64url-encoded"
+}

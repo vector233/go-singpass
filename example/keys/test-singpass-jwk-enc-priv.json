@@ -1,0 +1,13 @@
+{
+  "kty": "RSA",
+  "use": "enc",
+  "alg": "RSA-OAEP",
+  "n": "example-modulus-base64url-encoded",
+  "e": "AQAB",
+  "d": "example-private-exponent-base64url-encoded",
+  "p": "example-first-prime-factor-base64url-encoded",
+  "q": "example-second-prime-factor-base64url-encoded",
+  "dp": "example-first-factor-crt-exponent-base64url-encoded",
+  "dq": "example-second-factor-crt-exponent-base64url-encoded",
+  "qi": "example-first-crt-coefficient-base64url-encoded"
+}
