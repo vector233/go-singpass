@@ -24,15 +24,16 @@ type Config struct {
     SigPrivateKeyPath string `json:"sig_private_key_path,omitempty"`
     EncPrivateKeyPath string `json:"enc_private_key_path,omitempty"`
 
-    // Redis Configuration for state management
-    RedisAddr     string `json:"redis_addr"`
+    // State Storage Configuration
+    UseRedis      bool   `json:"use_redis"`
+    RedisAddr     string `json:"redis_addr,omitempty"`
     RedisPassword string `json:"redis_password,omitempty"`
-    RedisDB       int    `json:"redis_db"`
+    RedisDB       int    `json:"redis_db,omitempty"`
 
-    // Timeouts and Expiration
+    // Environment and Timeouts
+    Environment     string        `json:"environment,omitempty"`
     StateExpiration time.Duration `json:"state_expiration,omitempty"`
     NonceExpiration time.Duration `json:"nonce_expiration,omitempty"`
-    JWKSCacheTTL    time.Duration `json:"jwks_cache_ttl,omitempty"`
     HTTPTimeout     time.Duration `json:"http_timeout,omitempty"`
 }
 ```
@@ -111,12 +112,12 @@ if err != nil {
 // Redirect user to authURL
 ```
 
-### HandleCallback
+### ExchangeCodeForUserInfo
 
 Handles the OAuth2 callback and returns user information.
 
 ```go
-func (c *Client) HandleCallback(ctx context.Context, code, state string) (*UserInfo, error)
+func (c *Client) ExchangeCodeForUserInfo(ctx context.Context, code, state string) (*UserInfo, error)
 ```
 
 **Parameters:**
@@ -133,7 +134,59 @@ func (c *Client) HandleCallback(ctx context.Context, code, state string) (*UserI
 code := r.URL.Query().Get("code")
 state := r.URL.Query().Get("state")
 
-userInfo, err := client.HandleCallback(r.Context(), code, state)
+userInfo, err := client.ExchangeCodeForUserInfo(r.Context(), code, state)
+if err != nil {
+    return err
+}
+```
+
+### ExchangeCodeForTokens
+
+Handles the OAuth2 callback and returns validated tokens without extracting user info.
+
+```go
+func (c *Client) ExchangeCodeForTokens(ctx context.Context, code, state string) (*TokenResponse, error)
+```
+
+**Parameters:**
+- `ctx`: Context for the operation
+- `code`: Authorization code from callback
+- `state`: State parameter from callback
+
+**Returns:**
+- `*TokenResponse`: Token response containing access token, ID token, etc.
+- `error`: Error if callback handling fails
+
+**Example:**
+```go
+code := r.URL.Query().Get("code")
+state := r.URL.Query().Get("state")
+
+tokens, err := client.ExchangeCodeForTokens(r.Context(), code, state)
+if err != nil {
+    return err
+}
+```
+
+### GetUserInfo
+
+Retrieves additional user information using an access token.
+
+```go
+func (c *Client) GetUserInfo(ctx context.Context, accessToken string) (*UserInfo, error)
+```
+
+**Parameters:**
+- `ctx`: Context for the operation
+- `accessToken`: Valid access token
+
+**Returns:**
+- `*UserInfo`: User information from userinfo endpoint
+- `error`: Error if request fails
+
+**Example:**
+```go
+userInfo, err := client.GetUserInfo(r.Context(), tokens.AccessToken)
 if err != nil {
     return err
 }
@@ -154,60 +207,131 @@ func (c *Client) Close() error
 
 ### UserInfo
 
-Contains user information returned by Singpass.
+Contains user information returned by Singpass. This structure matches the actual Singpass API response format.
 
 ```go
 type UserInfo struct {
-    // Personal Information
-    Name        string `json:"name"`
-    UINFIN      string `json:"uinfin"`
-    Sex         string `json:"sex"`
-    DateOfBirth string `json:"date_of_birth"`
-    Nationality string `json:"nationality"`
+    // Personal Information (Singpass format)
+    Name        ValueField `json:"name"`        // User's full legal name
+    UINFIN      ValueField `json:"uinfin"`      // Singapore NRIC or FIN number
+    Sex         CodedField `json:"sex"`         // Gender code (M/F)
+    DOB         ValueField `json:"dob"`         // Date of birth in YYYY-MM-DD format
+    Nationality CodedField `json:"nationality"` // Nationality code (e.g., "SG" for Singapore)
 
     // Address Information
-    RegisteredAddress *Address `json:"registered_address,omitempty"`
+    RegAdd RegisteredAddress `json:"regadd"` // Complete registered address
 
     // Contact Information
-    MobileNumber string `json:"mobileno,omitempty"`
-    Email        string `json:"email,omitempty"`
+    MobileNo PhoneField `json:"mobileno"` // Mobile phone number
+    Email    ValueField `json:"email"`    // Email address
 
-    // JWT Claims
-    Issuer    string `json:"iss"`
-    Subject   string `json:"sub"`
-    Audience  string `json:"aud"`
-    IssuedAt  int64  `json:"iat"`
-    ExpiresAt int64  `json:"exp,omitempty"`
+    // Housing Information
+    Housingtype CodedField `json:"housingtype"` // Housing type code
+
+    // Standard OIDC claims as defined in OpenID Connect specification
+    Iss string `json:"iss"`           // Issuer - identifies the Singpass OIDC provider
+    Sub string `json:"sub"`           // Subject - unique identifier for the user
+    Aud string `json:"aud"`           // Audience - client ID that this token is intended for
+    Iat int64  `json:"iat"`           // Issued At - timestamp when the token was issued
+    Exp int64  `json:"exp,omitempty"` // Expiration Time - timestamp when the token expires
 }
 ```
 
 #### UserInfo Methods
 
-- `GetFullName() string`: Returns the full name
-- `GetIDNumber() string`: Returns the UINFIN
-- `GetFormattedAddress() string`: Returns formatted address string
-- `IsTokenExpired() bool`: Checks if the token is expired
+```go
+// GetName returns the user's full name from the Name field
+func (u *UserInfo) GetName() string
 
-### Address
+// GetUINFIN returns the user's NRIC/FIN number from the UINFIN field
+func (u *UserInfo) GetUINFIN() string
 
-Represents the registered address information.
+// GetAddress returns a formatted address string from the RegAdd field
+func (u *UserInfo) GetAddress() string
+
+// IsExpired checks if the JWT token is expired based on exp claim
+func (u *UserInfo) IsExpired() bool
+```
+
+### Nested Information Types
+
+Singpass returns structured information in nested objects with value and classification fields:
 
 ```go
-type Address struct {
-    Type        string `json:"type"`
-    Country     string `json:"country"`
-    Unit        string `json:"unit,omitempty"`
-    Floor       string `json:"floor,omitempty"`
-    Block       string `json:"block,omitempty"`
-    Building    string `json:"building,omitempty"`
-    Street      string `json:"street,omitempty"`
-    PostalCode  string `json:"postal,omitempty"`
+// ValueField represents a Singpass field containing a simple string value with metadata
+type ValueField struct {
+    LastUpdated    string `json:"lastupdated"`    // Timestamp when this field was last updated
+    Source         string `json:"source"`         // Data source identifier
+    Classification string `json:"classification"` // Data classification level
+    Value          string `json:"value"`          // The actual field value
+}
+
+// CodedField represents a Singpass field containing a coded value with metadata
+type CodedField struct {
+    LastUpdated    string `json:"lastupdated"`    // Timestamp when this field was last updated
+    Source         string `json:"source"`         // Data source identifier
+    Classification string `json:"classification"` // Data classification level
+    Code           string `json:"code"`           // Machine-readable code
+    Desc           string `json:"desc"`           // Human-readable description
+}
+
+// PhoneField represents a Singpass phone number with structured format and metadata
+type PhoneField struct {
+    LastUpdated    string       `json:"lastupdated"`    // Timestamp when this field was last updated
+    Source         string       `json:"source"`         // Data source identifier
+    Classification string       `json:"classification"` // Data classification level
+    AreaCode       ValueWrapper `json:"areacode"`       // Country/area code
+    Prefix         ValueWrapper `json:"prefix"`         // Phone number prefix
+    Number         ValueWrapper `json:"nbr"`            // Phone number
+}
+
+// RegisteredAddress represents a complete registered address structure with metadata
+type RegisteredAddress struct {
+    LastUpdated    string       `json:"lastupdated"`    // Timestamp when this field was last updated
+    Source         string       `json:"source"`         // Data source identifier
+    Classification string       `json:"classification"` // Data classification level
+    Country        CodeDesc     `json:"country"`        // Country code and description
+    Unit           ValueWrapper `json:"unit"`           // Unit number
+    Street         ValueWrapper `json:"street"`         // Street name
+    Block          ValueWrapper `json:"block"`          // Block number
+    Postal         ValueWrapper `json:"postal"`         // Postal code
+    Floor          ValueWrapper `json:"floor"`          // Floor number
+    Building       ValueWrapper `json:"building"`       // Building name
+    Type           string       `json:"type"`           // Address type (e.g., "SG")
+}
+
+// CodeDesc represents a field with both code and human-readable description
+type CodeDesc struct {
+    Code string `json:"code"` // Machine-readable code
+    Desc string `json:"desc"` // Human-readable description
+}
+
+// ValueWrapper represents a simple value wrapped in a standard structure
+type ValueWrapper struct {
+    Value string `json:"value"` // The wrapped value
 }
 ```
 
-#### Address Methods
+### TokenResponse
 
-- `Format() string`: Returns a formatted address string
+Contains OAuth2 token response from Singpass.
+
+```go
+type TokenResponse struct {
+    AccessToken  string `json:"access_token"`
+    TokenType    string `json:"token_type"`
+    ExpiresIn    int    `json:"expires_in"`
+    RefreshToken string `json:"refresh_token,omitempty"`
+    IDToken      string `json:"id_token"`
+    Scope        string `json:"scope,omitempty"`
+}
+```
+
+#### TokenResponse Methods
+
+- `GetAccessToken() string`: Returns the access token
+- `GetIDToken() string`: Returns the ID token
+- `IsExpired() bool`: Checks if the token is expired based on ExpiresIn
 
 ## Error Handling
 
@@ -280,8 +404,9 @@ type ErrJWKSFetch struct {
 1. **PKCE Support**: The library implements PKCE (Proof Key for Code Exchange) for enhanced security
 2. **State Management**: Uses cryptographically secure random state and nonce generation
 3. **Token Validation**: Validates JWT signatures using JWKS from Singpass
-4. **Redis Security**: Store sensitive state information in Redis with expiration
+4. **State Storage**: Supports both Redis and in-memory storage; Redis recommended for production
 5. **HTTPS Only**: All communication with Singpass endpoints uses HTTPS
+6. **Key Management**: Private keys for client assertion are loaded securely from file paths
 
 ## Best Practices
 
@@ -289,15 +414,16 @@ type ErrJWKSFetch struct {
 2. **Error Handling**: Always check and handle errors appropriately
 3. **Context Usage**: Use context for timeout and cancellation control
 4. **Resource Cleanup**: Always call `client.Close()` when done
-5. **Redis Security**: Use Redis AUTH and secure network configuration
-6. **Logging**: Implement proper logging for debugging and monitoring
+5. **State Storage**: Use Redis for production environments for better scalability and persistence
+6. **Redis Security**: When using Redis, configure AUTH and secure network settings
+7. **Logging**: Implement proper logging for debugging and monitoring
 
 ## Rate Limiting
 
 Singpass has rate limiting in place. Ensure your application:
 
 1. Implements proper retry logic with exponential backoff
-2. Caches JWKS appropriately (default: 24 hours)
+2. Fetches JWKS only when needed (keys are cached during token validation)
 3. Doesn't make unnecessary requests to Singpass endpoints
 
 ## Testing

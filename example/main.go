@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/vector233/go-singpass"
 )
@@ -42,7 +43,15 @@ func main() {
 	log.Println("2. Place your JWK key files in the keys/ directory")
 	log.Println("3. Ensure Redis is running on localhost:6379")
 
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	// Create server with timeouts for security
+	server := &http.Server{
+		Addr:         ":8080",
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal("Server failed to start:", err)
 	}
 }
@@ -160,7 +169,9 @@ func handleLogin(client *singpass.Client) http.HandlerFunc {
 
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(errorHTML))
+			if _, err := w.Write([]byte(errorHTML)); err != nil {
+				log.Printf("Failed to write error response: %v", err)
+			}
 			return
 		}
 
@@ -195,18 +206,51 @@ func handleCallback(client *singpass.Client) http.HandlerFunc {
 </html>`
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(errorHTML))
+			if _, err := w.Write([]byte(errorHTML)); err != nil {
+				log.Printf("Failed to write error response: %v", err)
+			}
 			return
 		}
 
-		// For now, just show that we received the callback
-		// The actual token exchange would happen here with the proper methods
+		// Exchange authorization code for user information
+		userInfo, err := client.ExchangeCodeForUserInfo(r.Context(), code, state)
+		if err != nil {
+			log.Printf("Failed to exchange code for user info: %v", err)
+			errorHTML := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Authentication Error</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
+        .error { background: #ffebee; color: #c62828; padding: 20px; border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div class="error">
+        <h2>❌ Authentication Error</h2>
+        <p>Failed to complete authentication: %s</p>
+        <a href="/"><button>← Back to Home</button></a>
+    </div>
+</body>
+</html>`, err.Error())
+
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusInternalServerError)
+			if _, err := w.Write([]byte(errorHTML)); err != nil {
+				log.Printf("Failed to write error response: %v", err)
+			}
+			return
+		}
+
+		// Display user information
 		successHTML := fmt.Sprintf(`
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Callback Received</title>
+    <title>Authentication Success</title>
     <style>
         body { 
             font-family: Arial, sans-serif; 
@@ -219,14 +263,26 @@ func handleCallback(client *singpass.Client) http.HandlerFunc {
             justify-content: center;
         }
         .container { 
-            max-width: 600px; 
+            max-width: 800px; 
             background: rgba(255,255,255,0.1);
             padding: 40px;
             border-radius: 15px;
             backdrop-filter: blur(10px);
             text-align: center;
         }
-        .success { margin: 20px 0; }
+        .user-info {
+            background: rgba(0,0,0,0.2);
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .info-row {
+            margin: 10px 0;
+            padding: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+        }
         button { 
             background: rgba(255,255,255,0.2); 
             color: white; 
@@ -236,38 +292,40 @@ func handleCallback(client *singpass.Client) http.HandlerFunc {
             cursor: pointer; 
         }
         button:hover { background: rgba(255,255,255,0.3); }
-        .code-display {
-            background: rgba(0,0,0,0.2);
-            padding: 15px;
-            border-radius: 8px;
-            font-family: monospace;
-            margin: 20px 0;
-            word-break: break-all;
-        }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="success">
-            <h1>✅ Callback Received Successfully!</h1>
-            <p>The Singpass authentication callback was received with the following parameters:</p>
-            
-            <div class="code-display">
-                <strong>Authorization Code:</strong><br>
-                %s<br><br>
-                <strong>State:</strong><br>
-                %s
-            </div>
-            
-            <p><em>In a complete implementation, this is where the authorization code would be exchanged for tokens and user information would be retrieved.</em></p>
-            
-            <a href="/"><button>🏠 Back to Home</button></a>
+        <h1>✅ Authentication Successful!</h1>
+        <p>Welcome! Here's your information from Singpass:</p>
+        
+        <div class="user-info">
+            <div class="info-row"><strong>Name:</strong> %s</div>
+            <div class="info-row"><strong>NRIC/FIN:</strong> %s</div>
+            <div class="info-row"><strong>Gender:</strong> %s (%s)</div>
+            <div class="info-row"><strong>Date of Birth:</strong> %s</div>
+            <div class="info-row"><strong>Nationality:</strong> %s (%s)</div>
+            <div class="info-row"><strong>Address:</strong> %s</div>
+            <div class="info-row"><strong>Mobile:</strong> %s</div>
+            <div class="info-row"><strong>Email:</strong> %s</div>
         </div>
+        
+        <a href="/"><button>🏠 Back to Home</button></a>
     </div>
 </body>
-</html>`, code, state)
+</html>`,
+			userInfo.GetName(),
+			userInfo.GetUINFIN(),
+			userInfo.Sex.Desc, userInfo.Sex.Code,
+			userInfo.DOB.Value,
+			userInfo.Nationality.Desc, userInfo.Nationality.Code,
+			userInfo.GetAddress(),
+			userInfo.MobileNo.Number.Value,
+			userInfo.Email.Value)
 
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(successHTML))
+		if _, err := w.Write([]byte(successHTML)); err != nil {
+			log.Printf("Failed to write success response: %v", err)
+		}
 	}
 }
