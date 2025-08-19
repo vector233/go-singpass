@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/vector233/go-singpass/internal/constants"
+	"github.com/vector233/go-singpass/internal/errors"
 )
 
 // Config holds the configuration for Singpass authentication
@@ -58,26 +59,26 @@ func (c *Config) SetDefaults() {
 // Validate checks if the configuration is valid
 func (c *Config) Validate() error {
 	if c.ClientID == "" {
-		return fmt.Errorf("invalid config: ClientID is required")
+		return errors.ErrInvalidConfig{Field: "ClientID"}
 	}
 	if c.RedirectURI == "" {
-		return fmt.Errorf("invalid config: RedirectURI is required")
+		return errors.ErrInvalidConfig{Field: "RedirectURI"}
 	}
 	if c.AuthURL == "" {
-		return fmt.Errorf("invalid config: AuthURL is required")
+		return errors.ErrInvalidConfig{Field: "AuthURL"}
 	}
 	if c.TokenURL == "" {
-		return fmt.Errorf("invalid config: TokenURL is required")
+		return errors.ErrInvalidConfig{Field: "TokenURL"}
 	}
 	if c.UserInfoURL == "" {
-		return fmt.Errorf("invalid config: UserInfoURL is required")
+		return errors.ErrInvalidConfig{Field: "UserInfoURL"}
 	}
 	if c.JWKSURL == "" {
-		return fmt.Errorf("invalid config: JWKSURL is required")
+		return errors.ErrInvalidConfig{Field: "JWKSURL"}
 	}
 	// Only validate Redis configuration if UseRedis is true
 	if c.UseRedis && c.RedisAddr == "" {
-		return fmt.Errorf("invalid config: RedisAddr is required when UseRedis is true")
+		return errors.ErrInvalidConfig{Field: "RedisAddr (required when UseRedis is true)"}
 	}
 	if c.Environment != "" && c.Environment != constants.EnvironmentSandbox && c.Environment != constants.EnvironmentProduction {
 		return fmt.Errorf("environment must be '%s' or '%s', got: %s",

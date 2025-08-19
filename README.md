@@ -208,18 +208,97 @@ expiry := userInfo.Exp    // Expiration timestamp
 
 ## Error Handling
 
+The library provides structured error types for better error handling and debugging:
+
+### Error Types
+
+- **`ErrInvalidConfig`** - Configuration validation errors
+- **`ErrInvalidState`** - State parameter validation errors
+- **`ErrTokenValidation`** - JWT token validation failures
+- **`ErrHTTPRequest`** - HTTP request failures with status codes
+- **`ErrRedisOperation`** - Redis operation errors
+- **`ErrJWKSFetch`** - JWKS retrieval failures
+
+### Error Handling Examples
+
 ```go
+import (
+    "errors"
+    "github.com/vector233/go-singpass"
+)
+
+// Configuration validation
+client, err := singpass.NewClient(config)
+if err != nil {
+    var configErr singpass.ErrInvalidConfig
+    if errors.As(err, &configErr) {
+        fmt.Printf("Configuration error - missing field: %s\n", configErr.Field)
+        return
+    }
+}
+
+// Authentication flow error handling
 userInfo, err := client.ExchangeCodeForUserInfo(ctx, code, state)
 if err != nil {
+    var stateErr singpass.ErrInvalidState
+    var tokenErr singpass.ErrTokenValidation
+    var httpErr singpass.ErrHTTPRequest
+    var jwksErr singpass.ErrJWKSFetch
+    
     switch {
-    case strings.Contains(err.Error(), "invalid state"):
-        // Handle invalid state parameter
-    case strings.Contains(err.Error(), "token validation failed"):
-        // Handle token validation errors
-    case strings.Contains(err.Error(), "failed to fetch JWKS"):
+    case errors.As(err, &stateErr):
+        fmt.Printf("State validation failed: %s\n", stateErr.Message)
+        // Handle invalid or expired state
+        
+    case errors.As(err, &tokenErr):
+        fmt.Printf("Token validation failed: %s\n", tokenErr.Message)
+        // Handle JWT validation errors
+        
+    case errors.As(err, &httpErr):
+        fmt.Printf("HTTP request failed (status %d): %s\n", httpErr.StatusCode, httpErr.Message)
+        // Handle HTTP errors with specific status codes
+        if httpErr.StatusCode == 401 {
+            // Handle authentication errors
+        } else if httpErr.StatusCode >= 500 {
+            // Handle server errors
+        }
+        
+    case errors.As(err, &jwksErr):
+        fmt.Printf("JWKS fetch failed: %s\n", jwksErr.Message)
         // Handle JWKS retrieval errors
+        
     default:
+        fmt.Printf("Unexpected error: %v\n", err)
         // Handle other errors
+    }
+}
+
+// Redis state storage error handling
+if config.UseRedis {
+    _, err := client.GenerateAuthURL(ctx)
+    if err != nil {
+        var redisErr singpass.ErrRedisOperation
+        if errors.As(err, &redisErr) {
+            fmt.Printf("Redis %s operation failed: %s\n", redisErr.Operation, redisErr.Message)
+            // Handle Redis connection or operation errors
+        }
+    }
+}
+```
+
+### Error Context and Chaining
+
+All errors include detailed context information and support error chaining:
+
+```go
+// Errors provide detailed context
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    // Output: "failed to exchange code for tokens: HTTP request failed (status 400): invalid_grant"
+    
+    // Access underlying errors
+    if unwrapped := errors.Unwrap(err); unwrapped != nil {
+        fmt.Printf("Underlying error: %v\n", unwrapped)
     }
 }
 ```

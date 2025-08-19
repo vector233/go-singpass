@@ -21,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/vector233/go-singpass/internal/auth"
+	"github.com/vector233/go-singpass/internal/errors"
 	"github.com/vector233/go-singpass/internal/utils"
 )
 
@@ -160,19 +161,19 @@ func (c *Client) ExchangeCodeForTokens(ctx context.Context, code, state string) 
 	// Retrieve and validate state data
 	stateData, err := c.stateManager.Get(ctx, state)
 	if err != nil {
-		return nil, fmt.Errorf("invalid state: state not found or expired")
+		return nil, fmt.Errorf("failed to retrieve state data: %w", err)
 	}
 
 	// Exchange code for tokens
 	tokenResp, err := c.exchangeCodeForTokens(ctx, code, stateData.CodeVerifier)
 	if err != nil {
-		return nil, fmt.Errorf("failed to exchange code for tokens: %w", err)
+		return nil, fmt.Errorf("token exchange failed: %w", err)
 	}
 
 	// Validate ID token
 	_, err = c.tokenValidator.ValidateIDToken(ctx, tokenResp.IDToken, stateData.Nonce)
 	if err != nil {
-		return nil, fmt.Errorf("failed to validate ID token: %w", err)
+		return nil, fmt.Errorf("ID token validation failed: %w", err)
 	}
 
 	// Clean up state data
@@ -192,7 +193,7 @@ func (c *Client) ExchangeCodeForUserInfo(ctx context.Context, code, state string
 	// Get user info from UserInfo endpoint using access token
 	userInfo, err := c.GetUserInfo(ctx, tokenResp.AccessToken)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get user info: %w", err)
+		return nil, fmt.Errorf("user info retrieval failed: %w", err)
 	}
 
 	return userInfo, nil
@@ -203,7 +204,7 @@ func (c *Client) exchangeCodeForTokens(ctx context.Context, code, codeVerifier s
 	// Create client assertion for authentication
 	clientAssertion, err := c.createClientAssertion(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create client assertion: %w", err)
+		return nil, fmt.Errorf("client assertion creation failed: %w", err)
 	}
 
 	data := url.Values{
@@ -218,7 +219,7 @@ func (c *Client) exchangeCodeForTokens(ctx context.Context, code, codeVerifier s
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.config.TokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create token request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -226,7 +227,7 @@ func (c *Client) exchangeCodeForTokens(ctx context.Context, code, codeVerifier s
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("token request failed: %w", err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -236,11 +237,11 @@ func (c *Client) exchangeCodeForTokens(ctx context.Context, code, codeVerifier s
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read token response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+		return nil, errors.ErrHTTPRequest{StatusCode: resp.StatusCode, Message: string(body)}
 	}
 
 	var tokenResp TokenResponse
@@ -256,7 +257,7 @@ func (c *Client) createClientAssertion(_ context.Context) (string, error) {
 	// Load private key for signing
 	privateKey, err := c.loadPrivateKey()
 	if err != nil {
-		return "", fmt.Errorf("failed to load private key: %w", err)
+		return "", fmt.Errorf("private key loading failed: %w", err)
 	}
 
 	// Create JWT claims
@@ -344,26 +345,26 @@ func (c *Client) GetUserInfo(ctx context.Context, accessToken string) (*UserInfo
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("userinfo request failed with status: %d", resp.StatusCode)
+		return nil, errors.ErrHTTPRequest{StatusCode: resp.StatusCode, Message: "userinfo request failed"}
 	}
 
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
+		return nil, fmt.Errorf("failed to read userinfo response: %w", err)
 	}
 
 	// For Singpass, UserInfo response is typically JWE encrypted
 	// Decrypt JWE if needed
 	userInfoData, err := c.decryptUserInfo(body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt user info: %w", err)
+		return nil, fmt.Errorf("userinfo decryption failed: %w", err)
 	}
 
 	// Parse user info
 	var userInfo UserInfo
 	if err := json.Unmarshal(userInfoData, &userInfo); err != nil {
-		return nil, fmt.Errorf("failed to parse user info: %w", err)
+		return nil, fmt.Errorf("userinfo parsing failed: %w", err)
 	}
 
 	return &userInfo, nil
@@ -381,7 +382,7 @@ func (c *Client) decryptUserInfo(encryptedData []byte) ([]byte, error) {
 	// Load encryption private key for decryption
 	privateKey, err := c.loadEncryptionPrivateKey()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load encryption private key: %w", err)
+		return nil, fmt.Errorf("encryption private key loading failed: %w", err)
 	}
 
 	// Get algorithm from the private key

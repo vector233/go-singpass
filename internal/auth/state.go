@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/vector233/go-singpass/internal/constants"
+	"github.com/vector233/go-singpass/internal/errors"
 )
 
 // StateData represents OAuth state information
@@ -68,14 +69,14 @@ func (ms *MemoryStateStore) Get(ctx context.Context, state string) (*StateData, 
 	ms.mu.RUnlock()
 
 	if !exists {
-		return nil, fmt.Errorf("invalid state: state not found or expired")
+		return nil, errors.ErrInvalidState{Message: "state not found or expired"}
 	}
 
 	if time.Now().After(entry.expiredAt) {
 		ms.mu.Lock()
 		delete(ms.data, state)
 		ms.mu.Unlock()
-		return nil, fmt.Errorf("invalid state: state not found or expired")
+		return nil, errors.ErrInvalidState{Message: "state not found or expired"}
 	}
 
 	return entry.data, nil
@@ -115,7 +116,7 @@ func (rs *RedisStateStore) Store(ctx context.Context, state string, stateData *S
 	key := fmt.Sprintf("%s%s", constants.StateKeyPrefix, state)
 	err = rs.redisClient.Set(ctx, key, data, rs.expiration).Err()
 	if err != nil {
-		return fmt.Errorf("redis set operation failed: %w", err)
+		return errors.ErrRedisOperation{Operation: "set", Message: err.Error()}
 	}
 	return nil
 }
@@ -126,9 +127,9 @@ func (rs *RedisStateStore) Get(ctx context.Context, state string) (*StateData, e
 	data, err := rs.redisClient.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
-			return nil, fmt.Errorf("invalid state: state not found or expired")
+			return nil, errors.ErrInvalidState{Message: "state not found or expired"}
 		}
-		return nil, fmt.Errorf("redis get operation failed: %w", err)
+		return nil, errors.ErrRedisOperation{Operation: "get", Message: err.Error()}
 	}
 
 	var stateData StateData
