@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid" //nolint:depguard // UUID generation is required for OIDC state
 	"github.com/lestrrat-go/jwx/v3/jwe"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 	"github.com/redis/go-redis/v9"
 
@@ -370,15 +371,8 @@ func (c *Client) GetUserInfo(ctx context.Context, accessToken string) (*UserInfo
 	return &userInfo, nil
 }
 
-// decryptUserInfo decrypts JWE encrypted user info response
+// decryptUserInfo decrypts JWE encrypted user info response and verifies the inner JWS
 func (c *Client) decryptUserInfo(encryptedData []byte) ([]byte, error) {
-	// Try to parse as JSON first (unencrypted response)
-	var testJSON map[string]interface{}
-	if err := json.Unmarshal(encryptedData, &testJSON); err == nil {
-		// Data is already in JSON format, return as-is
-		return encryptedData, nil
-	}
-
 	// Load encryption private key for decryption
 	privateKey, err := c.loadEncryptionPrivateKey()
 	if err != nil {
@@ -397,7 +391,14 @@ func (c *Client) decryptUserInfo(encryptedData []byte) ([]byte, error) {
 		return nil, fmt.Errorf("failed to decrypt JWE: %w", err)
 	}
 
-	return decrypted, nil
+	// The decrypted data is in JWS format, verify and parse it
+	jwsToken := string(decrypted)
+	userInfoData, err := c.verifyUserInfoJWS(context.Background(), jwsToken)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify UserInfo JWS: %w", err)
+	}
+
+	return userInfoData, nil
 }
 
 // loadEncryptionPrivateKey loads the encryption private key from file
@@ -418,6 +419,32 @@ func (c *Client) loadPrivateKeyFromPath(keyPath, keyType string) (jwk.Key, error
 	}
 
 	return jwkKey, nil
+}
+
+// verifyUserInfoJWS verifies the JWS token and returns the payload
+func (c *Client) verifyUserInfoJWS(ctx context.Context, jwsToken string) ([]byte, error) {
+	// Get JWKS for verification
+	jwks, err := jwk.Fetch(ctx, c.config.JWKSURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch JWKS: %w", err)
+	}
+
+	// Verify the JWS token with algorithm inference
+	buf, err := jws.Verify([]byte(jwsToken), jws.WithKeySet(jwks, jws.WithInferAlgorithmFromKey(true)))
+	if err != nil {
+		// Try to refresh JWKS and retry once
+		jwks, refreshErr := jwk.Fetch(ctx, c.config.JWKSURL)
+		if refreshErr != nil {
+			return nil, fmt.Errorf("failed to refresh JWKS after verification failure: %w", refreshErr)
+		}
+
+		buf, err = jws.Verify([]byte(jwsToken), jws.WithKeySet(jwks, jws.WithInferAlgorithmFromKey(true)))
+		if err != nil {
+			return nil, fmt.Errorf("JWS verification failed even after JWKS refresh: %w", err)
+		}
+	}
+
+	return buf, nil
 }
 
 // Close closes the client and cleans up resources
